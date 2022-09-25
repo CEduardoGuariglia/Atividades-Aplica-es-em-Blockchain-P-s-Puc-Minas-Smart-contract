@@ -4,236 +4,281 @@ pragma solidity >=0.7.0 <0.9.0;
 
 import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/token/ERC20/IERC20.sol";
 
-
 contract DexAutomaticMarketMaker {
+    
+    // O endereço dono poderá permitir e negar acesso as funções e escolher as taxas da DEX
+    
+    address dono;
+    function escolherDono(address _dono) public{  
+        dono = _dono;
+    }
+    
+    // Apenas o dono pode autorizar os acessos escrevendo true
+    
+    bool acessoAutorizado;
+    function autorizarAcesso(bool _permitirAcesso) public {   
+        require (msg.sender == dono, "So o dono pode liberar o acesso");
+        if (_permitirAcesso == true){
+            acessoAutorizado = true;
+        } else{
+            acessoAutorizado = false;
+        }
+    }
+    
+    // Uma verificação se um endereço é um usuário
+
+    function usuario () view public returns (string memory) {
+        require (msg.sender == dono, "Voce e um usuario");
+        return "voce e o dono";
+    }
+
+    // Tokens A e B. Que serão usados para criar a piscina de liquidez, além de realizar swap entre eles.
+
     IERC20 public immutable tokenA;
     IERC20 public immutable tokenB;
-    // Definindo as variáveis: tokens A e B. Que serão usados para adicionar e remover liquidez, para assim ser possível realizar swap entre eles.
-    
+        
+    //  Reservas dos tokens A e B, depositadas nas pools de liquidez.
+
     uint public reservaA;
     uint public reservaB;
-    // Definindo as variáveis que mostram as reservas dos tokens A e B, depositadas nas pools de liquidez.
 
+    /* Definindo a variáveis usada para calcular o suprimetno do token de provedor de liquidez de cada usuário (liquidity provider token - lp token) 
+     * e definindo o balanço desses tolkens, além da participação do usuário na piscina de liquidez;*/
+    
+    uint participacao;
     uint public totalSupply;
     mapping(address => uint) public balanceOf; 
-    /* Definindo a variáveis usada para calcular o suprimetno do token de provedor de liquidez de cada usuário (liquidity provider token - lp token) 
-    e definindo o mapping balanço;*/
-    
+        
+    /* taxa a ser cobrada no swap, em decimal de porcentagem, definido para os swaps, que ficará com o provedor de liquidez, 
+    * por defaut vai vir com 0,3%, mas o owner pode muda-lá; */
+
     uint taxa = 3;
-    // taxa em decimal de porcentagem, definido para os swaps, que ficará com o provedor de liquidez, por defaut vai vir com 0,3%, mas o owner pode muda-lá; 
-    
-    constructor(address _tokenA, address _tokenB) {
-        tokenA = IERC20(_tokenA);
-        tokenB = IERC20(_tokenB);
+        function alterarTaxa(uint _taxa) public {
+        require (msg.sender == dono, "So o dono pode alterar a taxa");
+        taxa = _taxa;
     }
-     // Selecionando os tolkens que serão usados para adicionar ou remover liquidez, ou ainda a realização de swaps. 
+
+    // Ao delpoyar o contrato deve-se escolher os tolkens que serão usados para adicionar ou remover liquidez e a realização de swaps. 
+
+    constructor(address _tokenA, address _tokenB) {
+            tokenA = IERC20(_tokenA);
+            tokenB = IERC20(_tokenB);
+    }
+    
+    // Função que minta (gera) os lptokens fornecidos a um endereço quando ele adiciona liquidez.
 
     function _mint(address _to, uint _amount) private {
-        balanceOf[_to] += _amount;
-        totalSupply += _amount;
+            balanceOf[_to] += _amount;
+            totalSupply += _amount;
     }
-    // Mintando (gerando) os lptokens fornecidos a um endereço quando ele adiciona liquidez.
+
+    // Função queima (destrói) os lptokens de um endereço ao se remover liquidez.
 
     function _burn(address _from, uint _amount) private {
-        balanceOf[_from] -= _amount;
-        totalSupply -= _amount;
+            balanceOf[_from] -= _amount;
+            totalSupply -= _amount;
     }
-    // Queimando (destruindo) os lptokens de um endereço quando ele remove liquidez.
+
+    // Função atualiza os valores das reservas de tokens que estão na piscina de liquidez, quando um swap é realizado ou quando se adiciona ou remove liquidez. 
 
     function _update(uint _reservaA, uint _reservaB) private {
-        reservaA = _reservaA;
-        reservaB = _reservaB;
+            reservaA = _reservaA;
+            reservaB = _reservaB;
     }
-    // Atualiza os valores das reservas de tokens que estão na piscina de liquidez, quando um swap é realizado ou quando se adiciona ou remove liquidez. 
+
+    // Permite ao provedor de liquidez a vizualização das taxas ganhas em 10^(-3),baseado nas taxas coletadas pelo protocolo e pela participação desse membro na pool. 
+        
+    uint taxaAcumulada = 0;
+    function vizualizarRoyalty() public view returns (uint royalty) {
+            require (acessoAutorizado == true, "Acesso nao autorizado");
+            royalty = participacao*taxaAcumulada;
+    }
+        
+    /* Função realiza swaps (Uma operação de troca entre tokens da pool, o usuário compra o token de saída em troca de depoistar o de entrada, que ele está vendendo) 
+    * é preciso escolher um dos dois tokens da piscina de liquidez para vender e a quantidade a ser vendida.*/
 
     function swap(address _tokenEntrada, uint _amountIn) external returns (uint amountOut) {
-        require(
-    /* Realiza swap (Uma operação de troca entre tokens, compra o token de saída em troca de depoistar o de entrada) 
-    é preciso escolher um dos dois tokens da piscina de liquidez e a quantidade a ser vendida.*/
-
-            _tokenEntrada == address(tokenA) || _tokenEntrada == address(tokenB),
-            "invalid token"
-            /*Verificando se o tokenEntrada é o token A ou B dessa piscina de liquidez, 
-            caso não seja nenhum deles informa que o token é inválido.*/ 
-        );
-
-        require(_amountIn > 0, "amount in = 0");
-        // Exige que o valor de entrada seja maior que zero para a realização do swap.
-
-        bool istokenA = _tokenEntrada == address(tokenA);
-        (IERC20 tokenEntrada, IERC20 tokenOut, uint reservaEntrada, uint reservaSaida) = istokenA
-            ? (tokenA, tokenB, reservaA, reservaB)
-            : (tokenB, tokenA, reservaB, reservaA);
-        // Verifica se o token de entrada é o A ou o B, classificando o de saida como consequência e as respectivas reservas.
-
-        tokenEntrada.transferFrom(msg.sender, address(this), _amountIn);
-        // Realiza o envio dos tokens de entrada (os depositados no swap: "vendidos") para o contrato, os colocando na reserva do token na piscina de liquidez;
+            require (acessoAutorizado == true, "Acesso nao autorizado");
+            require(
         
-        uint amountInComTaxa = (_amountIn * (1000 - taxa)) / 1000;
-        // Quanto será usado no swap descontado a taxa; 
+                //Verificando se o tokenEntrada é o token A ou B dessa piscina de liquidez, caso não seja nenhum deles informa que o token é inválido.
 
-        amountOut = (reservaSaida * amountInComTaxa) / (reservaEntrada + amountInComTaxa);
-        /* 
-        amountOut calcula a quantidade de token que será sacado pelo usuário que realiza o swap.
-        Para isso, usamos a "Constant Product Automatic Market Maker" (CPAMM). 
-        Definido por: ao multiplicarmos a quantidade dos tokens A e B contidos nas reservas o resultado é uma constante real.
-        Sendo x a reserva do token que será depositado e y a reserva do token que será sacado,
-        chamaremos de dx (variação x) o valor a ser depositado e dy (variação de y) o valor a ser sacado, 
-        ou seja: o amountOut = dy; amountInComTaxa= dx; reservaEntrada = x e reservaSaida = y;
+                _tokenEntrada == address(tokenA) || _tokenEntrada == address(tokenB),
+                "invalid token"
+            );
 
-        Partidindo da CPAMM temos que: xy = k [1] (sendo k uma constante real)        
-        No caso de um swap, o valor depositado seria somado na reserva do token de entrada e o calor sacado subtraído da reserva do token de saída: 
-        (x + dx)(y - dy) = k [2]
-        
-        Substituindo [1] em [2] temos:
-        xy = (x + dx)(y - dy)
-        xy/(x + dx) = y - dy
-        dy = y - xy/(x + dx)
-        dy = (y(x + dx) - xy)/(x + dx)
-        dy = (xy + ydx - xy)/(x + dx)
-        dy = ydx/(x + dx)
-        */
+            // Verifica se o token de entrada é o A ou o B, classificando o de saida como consequência e as respectivas reservas.
 
-        tokenOut.transfer(msg.sender, amountOut);
-        // Realiza o saque do token resultado do swap;
+            require(_amountIn > 0, "amount in = 0");
+            bool istokenA = _tokenEntrada == address(tokenA);
+            (IERC20 tokenEntrada, IERC20 tokenOut, uint reservaEntrada, uint reservaSaida) = istokenA
+                ? (tokenA, tokenB, reservaA, reservaB)
+                : (tokenB, tokenA, reservaB, reservaA);
 
-        _update(tokenA.balanceOf(address(this)), tokenB.balanceOf(address(this)));
-        // Atualiza o valor da reserva dos tokens A e B usando o mapping balanço para isso.
-    }
+            // Realiza o envio dos tokens de entrada (os depositados no swap: "vendidos") para o contrato, os colocando na reserva do token na piscina de liquidez;
 
-    function addLiquidity(uint _amountA, uint _amountB) external returns (uint lpTokens) {
-            tokenA.transferFrom(msg.sender, address(this), _amountA);
-            tokenB.transferFrom(msg.sender, address(this), _amountB);   
+            tokenEntrada.transferFrom(msg.sender, address(this), _amountIn);
 
-        /*
-        Adiciona liquidez, a uma piscina formada por dois tokens que podem ser trocados no swap. 
-        Caso não haja uma piscina de liquidez dos tokens, o próprio usuário vai definir quanto deseja depositar de cada uma.
-        Porém, caso já haja uma piscina o token B deve ter um valor fixo que será calculado com base na quantidade de token A.
-        Para isso, partindo do CPAMM e sando as mesmas notações e fórumlas do CPAMM a quantidade de tokens a serem adicionados são dx e dy.
-        Temos:
-        xy = k
-        Após a adição de liquidez:
-        (x + dx)(y + dy) = k
-        Para que não haja alteração no preço na adição de liquidez é preciso que seja mantida a proporção dos preços antes e depois da adição, portanto: 
-        x / y = (x + dx) / (y + dy)
-        x(y + dy) = y(x + dx)
-        xy + xdy = xy + ydx
-        xdy = ydx
-        dy = (y / x) * dx
-        */
+            /* Cálculo de quanto do valor de entrada descontado a taxa, será usado no swap. A taxa fica na piscina de liquidez e acaba sendo destinada 
+            * para os provedores de liquidez ao ele remover a liquidez;*/
 
-        if (reservaA > 0 || reservaB > 0) {
-            require(reservaA * _amountB == reservaB * _amountA, "x / y != dx / dy");
+            uint amountInComTaxa = (_amountIn * (1000 - taxa)) / 1000;
+            
+            /* amountOut calcula a quantidade de token que será sacado pelo usuário que realiza o swap.
+            * Para isso, usamos a "Constant Product Automatic Market Maker" (CPAMM). 
+            * Definido por: ao multiplicarmos a quantidade dos tokens A e B contidos nas reservas o resultado é uma constante real.
+            * Sendo x a reserva do token que será depositado e y a reserva do token que será sacado,
+            * chamaremos de dx (variação x) o valor a ser depositado e dy (variação de y) o valor a ser sacado, 
+            * ou seja: o amountOut = dy; amountInComTaxa= dx; reservaEntrada = x e reservaSaida = y;
+            *
+            * Partidindo da CPAMM temos que: xy = k [1] (sendo k uma constante real)        
+            * No caso de um swap, o valor depositado seria somado na reserva do token de entrada e o calor sacado subtraído da reserva do token de saída: 
+            * (x + dx)(y - dy) = k [2]
+            * 
+            * Substituindo [1] em [2] temos:
+            * xy = (x + dx)(y - dy)
+            * xy/(x + dx) = y - dy
+            * dy = y - xy/(x + dx)
+            * dy = (y(x + dx) - xy)/(x + dx)
+            * dy = (xy + ydx - xy)/(x + dx)
+            * dy = ydx/(x + dx) */
+
+            amountOut = (reservaSaida * amountInComTaxa) / (reservaEntrada + amountInComTaxa);
+            
+           // Realiza o saque do token resultado do swap para o usuário. Atualiza o valor da reserva dos tokens A e B. Calcula a taxa acumulada para
+
+            tokenOut.transfer(msg.sender, amountOut);            
+            _update(tokenA.balanceOf(address(this)), tokenB.balanceOf(address(this)));
+            taxaAcumulada += _amountIn * taxa;
         }
 
-        if (totalSupply == 0) {
-            lpTokens = _sqrt(_amountA * _amountB);
-        } else {
-            lpTokens = _amountA * totalSupply / reservaA;
-        }
-        /*
-        É importante em uma corretora descentralizada, saber a participação do usuário na liquidez, para saber quantos tokens de cada tem direito ao remover liquidez.
-        Para isso, vamos estabelecer a uma variável chamado lpToken, que pode medir a participação de uma pessoa em relação ao total.
-        Para isso, basta dividir a sua quantidade de lpTokens (lp) pelo total de lpTokens emitidos (Tlp).
-        
-        Ainda usando as mesmas notações de x e y para as reservas dos tokens.
-        Para saber quanto lpToken é emitido na adição de liquidez, definimos o valor de liquidez como uma função f(x,y), nesse caso usaremos:
-        f(x,y)=sqrt(xy)
-        Sendo
-        f(x,y) = V0
-        f(x + dx, y + dy) = V1
-        Sendo V0 e V1 valores arbitrários resultantes da função.
-        O Total de lpTokens emitidos, devem ser aumentar proporcionalmente ao aumento da liquidez
-        (Tlp + lp) / Tlp = V1 / V0
-        V0 * (Tlp + lp) = V1 * Tlp
-        V0*Tlp + V0*lp = V1*Tlp
-        V0*lp = V1*Tlp - V0*Tlp
-        lp = (V1 - V0) * Tlp / V0  [3]
+        /* Adiciona liquidez, a uma piscina formada por dois tokens que podem ser trocados no swap. 
+        * Caso não haja uma piscina de liquidez dos tokens, o próprio usuário vai definir quanto deseja depositar de cada uma.
+        * Porém, caso já haja uma piscina o token B deve ter um valor fixo que será calculado com base na quantidade de token A.
+        * Para isso, partindo do CPAMM e sando as mesmas notações e fórumlas do CPAMM a quantidade de tokens a serem adicionados são dx e dy. Temos:
+        * xy = k
+        * Após a adição de liquidez:
+        * (x + dx)(y + dy) = k
+        * Para que não haja alteração no preço na adição de liquidez é preciso que seja mantida a proporção dos preços antes e depois da adição, portanto: 
+        * x / y = (x + dx) / (y + dy)
+        * x(y + dy) = y(x + dx)
+        * xy + xdy = xy + ydx
+        * xdy = ydx
+        * dy = (y / x) * dx */
 
-        (V1 - V0) / V0 = (sqrt((x + dx)(y + dy)) - sqrt(x.y)) / sqrt(x.y)
-        Sendo dx / dy = x / y, então temos que dy = dx * y / x
-        (V1 - V0) / V0 = (sqrt((x + dx)(y + dx * y / x)) - sqrt(x.y)) / sqrt(x.y)
-        (V1 - V0) / V0 = (sqrt((y.x + 2.y.dx + y.dx^2/x) - sqrt(x.y)) / sqrt(x.y)
-        Multiplicando por sqrt(x) / sqrt(x)
-        (V1 - V0) / V0 = (sqrt(y.x^2 + 2.x.y.dx + y.dx^2) - sqrt(x^2y)) / sqrt(x^2y)
-        (V1 - V0) / V0 = (sqrt(y).(sqrt(x^2 + 2xdx + dx^2) - sqrt(x^2))) / (sqrt(y)sqrt(x^2))
-        podemos cancelar sqrt(y) na parte de cima e de baixo da equação
-        (V1 - V0) / V0 = (sqrt(x^2 + 2.x.dx + dx^2) - sqrt(x^2)) / (sqrt(x^2)
-        (V1 - V0) / V0 = (sqrt((x + dx)^2) - sqrt(x^2)) / sqrt(x^2)  
-        (V1 - V0) / V0 = (x + dx - x) / x
-        (V1 - V0) / V0 = dx / x
-        Vale notar que dx / dy = x / y,
-        então: (V1 - V0) / V0 = dx / x = dy / y [4]
+        function addLiquidity(uint _amountA, uint _amountB) external returns (uint lpTokens) {
+                require (acessoAutorizado == true, "Acesso nao autorizado");
+                tokenA.transferFrom(msg.sender, address(this), _amountA);
+                tokenB.transferFrom(msg.sender, address(this), _amountB);   
 
-        Portanto subistituindo [4] em [3] temos [5]:
-        lp = dx * Tlp / x
-        ou lp = dy * Tlp / y
-        */
-
-        require(lpTokens > 0, "lpTokens = 0");
-        _mint(msg.sender, lpTokens);
-        // Minta-se os tokens para a carteira que adicionou a liquidez
-
-        _update(tokenA.balanceOf(address(this)), tokenB.balanceOf(address(this)));
-        //Atualiza os valores das reservas dos tokens
-    }
-
-    function removeLiquidity(uint _lpTokens) external returns (uint amountA, uint amountB)
-    {
-    // função para se remover liquidez vendendo os lptokens que serão queimados
-
-        amountA = (_lpTokens * reservaA) / totalSupply;
-        amountB = (_lpTokens * reservaB) / totalSupply;
-         /*
-        Seja v o valor de liquidez a ser sacado ao se remover liquidez, dado por:
-        v=f(dxdy)
-    
-        Ao se remover liquidez o usuário vai ter direito de sacar um valor (proporcional a sua participação na piscina de liquidez (lp/Tlp).
-        Com isso o valor a ser sacado será:
-        v=(lp/Tlp)*f(x,y)
-        f(dxdy)=(lp/Tlp)*sqrt(xy) 
-        sqrt(dxdy) = (lp/Tlp)*sqrt(xy) [6]
-        
-        Aplicando dx e dy na fórmula da liquidez temos:
-        f(dx, dy) = sqrt(dxdy), 
-        sqrt(dxdy) = sqrt(dx * dx * y / x) 
-        sqrt(dxdy) = dx * sqrt(y / x)
-        sqrt(dxdy)/sqrt(y / x) = dx [7]
-        
-        Dividindo os dois lados de [6] por sqrt(y / x)
-        sqrt(dxdy)/sqrt(y / x)=(lp/Tlp)*sqrt(xy)/sqrt(y / x)
-        sqrt(dxdy)/sqrt(y / x)=(lp/Tlp)*sqrt(x^2)    
-        sqrt(dxdy)/sqrt(y / x)=(lp/Tlp)*x
-
-        Substituindo [6] em [7] temos:
-        
-        dx = (lp/Tlp)*x
-        Analogamente
-        dy = (lp/Tlp)*y
-        */
-
-        require(amountA > 0 && amountB > 0, "amountA or amountB = 0");
-
-        _burn(msg.sender, _lpTokens);
-        _update(reservaA - amountA, reservaB - amountB);
-        // os lp tokens que não estão mais provendo liquidez são queimados e os saldos são atualizados
-
-        tokenA.transfer(msg.sender, amountA);
-        tokenB.transfer(msg.sender, amountB);
-        //transfere os tokens A e B que antes proviam liquidez para a carteira do usuário
-    }
-
-    function _sqrt(uint y) private pure returns (uint z) {
-        if (y > 3) {
-            z = y;
-            uint x = y / 2 + 1;
-            while (x < z) {
-                z = x;
-                x = (y / x + x) / 2;
+            if (reservaA > 0 || reservaB > 0) {
+                require(reservaA * _amountB == reservaB * _amountA, "x / y != dx / dy");
             }
-        } else if (y != 0) {
-            z = 1;
+
+            /* É importante em uma corretora descentralizada, saber a participação do usuário na liquidez, para saber quantos tokens de cada tem direito ao remover liquidez.
+            * Para isso, vamos estabelecer a uma variável chamado lpToken, que pode medir a participação de uma pessoa em relação ao total.
+            * Então, basta dividir a sua quantidade de lpTokens (lp) pelo total de lpTokens emitidos (Tlp).
+            *
+            * Ainda usando as mesmas notações de x e y para as reservas dos tokens.
+            * Para saber quanto lpToken é emitido na adição de liquidez, definimos o valor de liquidez como uma função f(x,y), nesse caso usaremos:
+            * f(x,y)=sqrt(xy)
+            * Sendo V0 e V1 valores arbitrários resultantes da função, temos:
+            * f(x,y) = V0
+            * f(x + dx, y + dy) = V1
+            * O Total de lpTokens emitidos, devem ser aumentar proporcionalmente ao aumento da liquidez
+            * (Tlp + lp) / Tlp = V1 / V0
+            * V0 * (Tlp + lp) = V1 * Tlp
+            * V0*Tlp + V0*lp = V1*Tlp
+            * V0*lp = V1*Tlp - V0*Tlp
+            * lp = (V1 - V0) * Tlp / V0  [3]
+            *
+            * (V1 - V0) / V0 = (sqrt((x + dx)(y + dy)) - sqrt(x.y)) / sqrt(x.y)
+            * Sendo dx / dy = x / y, então temos que dy = dx * y / x
+            * (V1 - V0) / V0 = (sqrt((x + dx)(y + dx * y / x)) - sqrt(x.y)) / sqrt(x.y)
+            * (V1 - V0) / V0 = (sqrt((y.x + 2.y.dx + y.dx^2/x) - sqrt(x.y)) / sqrt(x.y)
+            * Multiplicando por sqrt(x) / sqrt(x)
+            * (V1 - V0) / V0 = (sqrt(y.x^2 + 2.x.y.dx + y.dx^2) - sqrt(x^2y)) / sqrt(x^2y)
+            * (V1 - V0) / V0 = (sqrt(y).(sqrt(x^2 + 2xdx + dx^2) - sqrt(x^2))) / (sqrt(y)sqrt(x^2))
+            * podemos cancelar sqrt(y) na parte de cima e de baixo da equação
+            * (V1 - V0) / V0 = (sqrt(x^2 + 2.x.dx + dx^2) - sqrt(x^2)) / (sqrt(x^2)
+            * (V1 - V0) / V0 = (sqrt((x + dx)^2) - sqrt(x^2)) / sqrt(x^2)  
+            * (V1 - V0) / V0 = (x + dx - x) / x
+            * (V1 - V0) / V0 = dx / x
+            * Vale notar que dx / dy = x / y,
+            * então: (V1 - V0) / V0 = dx / x = dy / y [4]
+            *
+            * Portanto subistituindo [4] em [3] temos [5]:
+            * lp = dx * Tlp / x
+            * ou lp = dy * Tlp / y */
+
+            if (totalSupply == 0) {
+                lpTokens = _sqrt(_amountA * _amountB);
+            } else {
+                lpTokens = _amountA * totalSupply / reservaA;
+            }
+
+            // Minta-se os tokens para a carteira que adicionou a liquidez, calcula-se a participação desse endereço e atualiza os valores nas reservas
+            
+            require(lpTokens > 0, "lpTokens = 0");
+            _mint(msg.sender, lpTokens);
+            participacao = lpTokens/totalSupply;
+            _update(tokenA.balanceOf(address(this)), tokenB.balanceOf(address(this)));
         }
-        //Função utilizada para calcular a raiz quadrada
-    }
+
+        /* função para se remover liquidez vendendo os lptokens que serão queimados.
+        * Seja v o valor de liquidez a ser sacado ao se remover liquidez, dado por:
+        * v=f(dxdy)
+        *
+        * Ao se remover liquidez o usuário vai ter direito de sacar um valor (proporcional a sua participação na piscina de liquidez (lp/Tlp).
+        * Com isso o valor a ser sacado será:
+        * v=(lp/Tlp)*f(x,y)
+        * f(dxdy)=(lp/Tlp)*sqrt(xy) 
+        * sqrt(dxdy) = (lp/Tlp)*sqrt(xy) [6]
+        *  
+        * Aplicando dx e dy na fórmula da liquidez temos:
+        * f(dx, dy) = sqrt(dxdy), 
+        * sqrt(dxdy) = sqrt(dx * dx * y / x) 
+        * sqrt(dxdy) = dx * sqrt(y / x)
+        * sqrt(dxdy)/sqrt(y / x) = dx [7]
+        *  
+        * Dividindo os dois lados de [6] por sqrt(y / x)
+        * sqrt(dxdy)/sqrt(y / x)=(lp/Tlp)*sqrt(xy)/sqrt(y / x)
+        * sqrt(dxdy)/sqrt(y / x)=(lp/Tlp)*sqrt(x^2)    
+        * sqrt(dxdy)/sqrt(y / x)=(lp/Tlp)*x
+
+        *Substituindo [6] em [7] temos:
+        * dx = (lp/Tlp)*x
+        * Analogamente:
+        * dy = (lp/Tlp)*y */
+
+        function removeLiquidity(uint _lpTokens) external returns (uint amountA, uint amountB)
+        {
+           require (acessoAutorizado == true, "Acesso nao autorizado");
+            amountA = (_lpTokens * reservaA) / totalSupply;
+            amountB = (_lpTokens * reservaB) / totalSupply;
+
+            /* os lp tokens que não estão mais provendo liquidez são queimados e os saldos são atualizados e transfere os tokens A e B 
+            * que antes proviam liquidez para a carteira do usuário */
+
+            require(amountA > 0 && amountB > 0, "amountA or amountB = 0");
+            _burn(msg.sender, _lpTokens);
+            _update(reservaA - amountA, reservaB - amountB);
+            tokenA.transfer(msg.sender, amountA);
+            tokenB.transfer(msg.sender, amountB);
+        }
+
+            //Função utilizada para calcular a raiz quadrada
+
+        function _sqrt(uint y) private pure returns (uint z) {
+            if (y > 3) {
+                z = y;
+                uint x = y / 2 + 1;
+                while (x < z) {
+                    z = x;
+                    x = (y / x + x) / 2;
+                }
+            } else if (y != 0) {
+                z = 1;
+                }
+            }    
 }
